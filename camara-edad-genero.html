@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edad y género en cámara</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f6fb; color: #172033; }
+    main { width: min(94vw, 720px); padding: 1.5rem; box-sizing: border-box; background: white; border-radius: 18px; box-shadow: 0 12px 40px #152b4b18; }
+    h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+    p { color: #526078; margin: .25rem 0 1rem; }
+    .stage { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #0d1423; border-radius: 12px; overflow: hidden; }
+    video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    video { transform: scaleX(-1); } /* efecto espejo; el canvas calcula las coordenadas ya espejadas */
+    .buttons { display: flex; gap: .75rem; margin-top: 1rem; flex-wrap: wrap; }
+    button { border: 0; border-radius: 10px; padding: .75rem 1rem; font: inherit; font-weight: 600; cursor: pointer; background: #2258d5; color: white; }
+    button.secondary { background: #e7ecf5; color: #172033; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { margin-top: 1rem; min-height: 1.4em; color: #172033; }
+    #status.error { color: #b3261e; }
+    .note { font-size: .85rem; color: #526078; border-top: 1px solid #e7ecf5; padding-top: .75rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Edad y género en cámara</h1>
+    <p>Detección de rostro, edad y género estimados en tu navegador.</p>
+    <div class="stage">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="buttons">
+      <button id="start" type="button">Activar cámara</button>
+      <button id="stop" class="secondary" type="button" disabled>Detener</button>
+    </div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <p class="note">
+      Privacidad: todo se procesa en tu dispositivo; no se sube ni se guarda ninguna imagen.
+      Los resultados son estimaciones aproximadas (la edad puede errar varios años y el género
+      es una clasificación binaria con posibles sesgos). No los uses para tomar decisiones sobre personas.
+    </p>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
+  <script>
+    const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/";
+    const INFERENCE_INTERVAL_MS = 120;   // ~8 fps
+    const HISTORY = 10;                  // fotogramas para suavizar la edad
+    const AGE_MARGIN = 6;                // margen orientativo en años
+    const MIN_GENDER_PROB = 0.65;        // por debajo: "indeterminado"
+
+    const video = document.querySelector("#video");
+    const canvas = document.querySelector("#overlay");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.querySelector("#start");
+    const stopBtn = document.querySelector("#stop");
+    const statusEl = document.querySelector("#status");
+
+    let stream = null;
+    let running = false;
+    let modelsLoaded = false;
+    let tracks = [];                     // seguimiento simple para suavizar por rostro
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle("error", isError);
+    }
+
+    async function loadModels() {
+      if (modelsLoaded) return;
+      if (typeof faceapi === "undefined") throw new Error("LIB_NOT_LOADED");
+      setStatus("Cargando modelos…");
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL)
+      ]);
+      modelsLoaded = true;
+    }
+
+    function matchTrack(box, now) {
+      const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+      let best = null, bestDist = Infinity;
+      for (const t of tracks) {
+        const d = Math.hypot(t.cx - cx, t.cy - cy);
+        if (d < bestDist && d < box.width * 0.6) { best = t; bestDist = d; }
+      }
+      if (!best) { best = { ages: [] }; tracks.push(best); }
+      best.cx = cx; best.cy = cy; best.seen = now;
+      return best;
+    }
+
+    function draw(results, now) {
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.lineWidth = Math.max(2, W / 320);
+      ctx.font = `600 ${Math.max(14, Math.round(W / 40))}px system-ui, sans-serif`;
+      ctx.textBaseline = "top";
+      for (const r of results) {
+        const b = r.detection.box;
+        const track = matchTrack(b, now);
+        track.ages.push(r.age);
+        if (track.ages.length > HISTORY) track.ages.shift();
+        const age = Math.round(track.ages.reduce((a, v) => a + v, 0) / track.ages.length);
+        const lo = Math.max(0, age - AGE_MARGIN), hi = age + AGE_MARGIN;
+        const gender = r.genderProbability >= MIN_GENDER_PROB
+          ? (r.gender === "female" ? "mujer" : "hombre")
+          : "indeterminado";
+        const label = `~${age} años (${lo}–${hi}) · ${gender} ${Math.round(r.genderProbability * 100)}%`;
+
+        const x = W - b.x - b.width;     // coordenada espejada
+        ctx.strokeStyle = "#35d07f";
+        ctx.strokeRect(x, b.y, b.width, b.height);
+        const pad = 4, tw = ctx.measureText(label).width + pad * 2, th = parseInt(ctx.font, 10) + pad * 2;
+        const ty = b.y - th >= 0 ? b.y - th : b.y + b.height;
+        ctx.fillStyle = "#0d1423cc";
+        ctx.fillRect(x, ty, tw, th);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, x + pad, ty + pad);
+      }
+      tracks = tracks.filter(t => now - t.seen < 1000);
+    }
+
+    async function loop() {
+      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+      while (running) {
+        const t0 = performance.now();
+        if (video.readyState >= 2) {
+          try {
+            const results = await faceapi.detectAllFaces(video, options).withAgeAndGender();
+            if (!running) break;
+            draw(results, performance.now());
+            setStatus(results.length ? `${results.length} rostro(s) detectado(s)` : "Buscando rostros…");
+          } catch (e) {
+            console.error(e);
+            setStatus("Error durante la detección. Mira la consola.", true);
+            break;
+          }
+        }
+        const wait = INFERENCE_INTERVAL_MS - (performance.now() - t0);
+        await new Promise(res => setTimeout(res, Math.max(0, wait)));
+      }
+    }
+
+    function describeError(e) {
+      if (e && e.message === "LIB_NOT_LOADED") return "No se pudo cargar la librería de detección (¿sin conexión o bloqueada?).";
+      switch (e && e.name) {
+        case "NotAllowedError": return "Permiso de cámara denegado. Actívalo en la configuración del navegador.";
+        case "NotFoundError": return "No se encontró ninguna cámara.";
+        case "NotReadableError": return "La cámara está siendo usada por otra aplicación.";
+        default: return "No se pudo iniciar: " + (e && e.message ? e.message : e);
+      }
+    }
+
+    async function start() {
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus("La cámara requiere HTTPS o localhost (contexto seguro).", true);
+        return;
+      }
+      startBtn.disabled = true;
+      try {
+        await loadModels();
+        setStatus("Solicitando cámara…");
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        running = true;
+        stopBtn.disabled = false;
+        setStatus("Buscando rostros…");
+        loop();
+      } catch (e) {
+        console.error(e);
+        setStatus(describeError(e), true);
+        startBtn.disabled = false;
+      }
+    }
+
+    function stop() {
+      running = false;
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = null;
+      video.srcObject = null;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      tracks = [];
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      setStatus("Cámara detenida.");
+    }
+
+    startBtn.addEventListener("click", start);
+    stopBtn.addEventListener("click", stop);
+    window.addEventListener("pagehide", stop);
+  </script>
+</body>
+</html>
