@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contador sencillo</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f6fb; color: #172033; }
+    main { width: min(90vw, 420px); padding: 2rem; box-sizing: border-box; text-align: center; background: white; border-radius: 18px; box-shadow: 0 12px 40px #152b4b18; }
+    h1 { margin-top: 0; }
+    #count { margin: 1.5rem 0; font-size: 4rem; font-weight: 700; }
+    .buttons { display: flex; justify-content: center; gap: .75rem; flex-wrap: wrap; }
+    button { border: 0; border-radius: 10px; padding: .75rem 1rem; font: inherit; font-weight: 600; cursor: pointer; background: #2258d5; color: white; }
+    button.secondary { background: #e7ecf5; color: #172033; }
+    button:hover { filter: brightness(.95); }
+    p { color: #526078; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Contador sencillo</h1>
+    <p>Mi primer proyecto de prueba en GitHub</p>
+    <div id="count" aria-live="polite">0</div>
+    <div class="buttons">
+      <button id="add" type="button">Sumar</button>
+      <button id="subtract" class="secondary" type="button">Restar</button>
+      <button id="reset" class="secondary" type="button">Reiniciar</button>
+    </div>
+  </main>
+  <script>
+    let value = 0;
+    const output = document.querySelector("#count");
+    function showValue() { output.textContent = String(value); }
+    document.querySelector("#add").addEventListener("click", () => { value += 1; showValue(); });
+    document.querySelector("#subtract").addEventListener("click", () => { value -= 1; showValue(); });
+    document.querySelector("#reset").addEventListener("click", () => { value = 0; showValue(); });
+  </script>
+</body>
+</html>
